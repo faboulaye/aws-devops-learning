@@ -1,0 +1,37 @@
+version: "3"
+
+vars:
+  IMAGE_NAME: app:latest
+  CONTAINER_NAME: app-container
+
+tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task -l
+      
+  install:
+    desc: Install Node dependencies
+    cmds:
+      - npm install
+
+  run:
+    desc: Start the Node app on port 3000
+    cmds:
+      - npm start
+    env:
+      PORT: "3000"
+
+  docker:build:
+    desc: Build the Docker image
+    cmds:
+      - docker build -t {{.IMAGE_NAME}} .
+
+  docker:run:
+    desc: Run the Docker container mapping port 3000
+    cmds:
+      - |
+        docker run -d \
+          --name {{.CONTAINER_NAME}} \
+          -p 3000:3000 \
+          {{.IMAGE_NAME}}
