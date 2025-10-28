@@ -1,0 +1,16 @@
+{
+  "name": "aws-devops-learning-app",
+  "version": "1.0.0",
+  "description": "Node + Express app with responsive frontend showing hostname and version",
+  "main": "app/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node app/server.js",
+    "dev": "NODE_ENV=development node app/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
+
+

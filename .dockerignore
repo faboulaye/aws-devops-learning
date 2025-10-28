@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log*
+.DS_Store
+.git
+.gitignore
+.cache
+**/*.log
+**/.env*
+**/.vscode
+**/.idea
+**/.cursor
+**/tmp
+
+
