@@ -1,15 +1,15 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - develop
-      - next
-      - beta
-      - alpha
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or tag to release from
+        required: true
+        default: develop
 
 jobs:
-  release:
+  release-workflow:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,5 +34,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
-
-
