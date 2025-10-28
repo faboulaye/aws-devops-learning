@@ -5,6 +5,11 @@ vars:
   CONTAINER_NAME: app-container
 
 tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task -l
+      
   install:
     desc: Install Node dependencies
     cmds:
@@ -15,7 +20,7 @@ tasks:
     cmds:
       - npm start
     env:
-      PORT: "3800"
+      PORT: "3000"
 
   docker:build:
     desc: Build the Docker image
@@ -30,14 +35,3 @@ tasks:
           --name {{.CONTAINER_NAME}} \
           -p 3000:3000 \
           {{.IMAGE_NAME}}
-
-  docker:logs:
-    desc: Tail logs from the running container
-    cmds:
-      - docker logs -f {{.CONTAINER_NAME}}
-
-  docker:stop:
-    desc: Stop and remove the container if running
-    cmds:
-      - |
-        docker rm -f {{.CONTAINER_NAME}} >/dev/null 2>&1 || true

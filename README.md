@@ -6,7 +6,7 @@ This project is a minimal Node.js app using Express that serves a responsive fro
 
 ### Requirements
 
-- Node.js 18+
+- Node.js 20+
 
 ### Install
 
