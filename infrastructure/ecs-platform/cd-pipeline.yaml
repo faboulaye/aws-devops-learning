@@ -18,15 +18,10 @@ Parameters:
     Default: host-info-app
     Description: Application name
 
-  GitHubOwner:
-    Type: String
-    Description: GitHub repository owner
-    Default: faboulaye
-
   GitHubRepo:
     Type: String
     Description: GitHub repository name
-    Default: aws-devops-learning
+    Default: faboulaye/aws-devops-learning
 
   GitHubBranch:
     Type: String
@@ -80,39 +75,36 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: |
           version: 0.2
+          env:
+            git-credential-helper: yes
           phases:
             pre_build:
               commands:
-                - aws --version
+                - echo Resolve image tag version...
+                - git fetch --tags --depth=1
+                - IMAGE_TAG="$(git tag --points-at HEAD | head -n1)"
+                - if [ -z "$IMAGE_TAG" ]; then echo "No tag at HEAD (was this run not tag-triggered?)"; exit 1; fi
                 - echo Logging in to Amazon ECR...
                 - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-                - IMAGE_TAG=${CODEBUILD_WEBHOOK_TRIGGER#tag/}   # e.g., v1.2.3 when triggered by tag
-                - echo Build started on `date`
-                - echo Building the Docker image...
             build:
               commands:
                 - docker build -t $ECR_REPOSITORY_URI:$IMAGE_TAG .
                 - docker tag $ECR_REPOSITORY_URI:$IMAGE_TAG $ECR_REPOSITORY_URI:latest
             post_build:
               commands:
-                - echo Build completed on `date`
                 - echo Pushing the Docker images...
                 - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
                 - docker push $ECR_REPOSITORY_URI:latest
-                - echo Writing image tag file...
-                # Export CodePipeline variable named ImageTag for CFN ParameterOverrides
-                - printf '[{"name":"ImageTag","value":"%s"}]\n' "${IMAGE_TAG}" > /tmp/variables.json
+                - |
+                  cat <<EOF > /tmp/release_version.json
+                  {
+                    "ImageTag": "${IMAGE_TAG}"
+                  }
+                  EOF
           artifacts:
             files:
-              - /tmp/variables.json
-            discard-paths: yes
-            # Map /tmp/variables.json -> BuildOutput namespace variables
-            secondary-artifacts:
-              BuildOutput:
-                files:
-                  - /tmp/variables.json
-                name: BuildOutput
-                discard-paths: yes
+              - infrastructure/ecs-platform/ecs-cluster.yaml
+              - /tmp/release_version.json
 
   GitHubConnection:
     Type: AWS::CodeStarConnections::Connection
@@ -152,6 +144,7 @@ Resources:
                 FullRepositoryId: !Ref GitHubRepo
                 BranchName: !Ref GitHubBranch # required but ignored by tag trigger; keep present
                 DetectChanges: false # Triggers array above controls starts
+                OutputArtifactFormat: CODEBUILD_CLONE_REF # <-- enables full clone for CodeBuild
               OutputArtifacts:
                 - Name: SourceOutput
         - Name: Build
@@ -181,15 +174,14 @@ Resources:
                 ChangeSetName: !Sub ${Environment}-${AppName}-ecs-cluster-changeset
                 StackName: !Sub ${Environment}-${AppName}-ecs-cluster
                 Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
-                TemplatePath: SourceOutput::infrastructure/ecs-platform/ecs-cluster.yaml
+                TemplatePath: BuildOutput::ecs-cluster.yaml
                 ParameterOverrides: |
                   { 
                     "ImageTag": { 
-                      "Fn::GetParam" : [ "BuildOutput", "variables.json", "ImageTag" ] 
+                      "Fn::GetParam" : [ "BuildOutput", "release_version.json", "ImageTag" ] 
                     }
                   }
               InputArtifacts:
-                - Name: SourceOutput
                 - Name: BuildOutput
 
   # IAM Roles
@@ -296,6 +288,10 @@ Resources:
                   - ecr:DescribeRepositories
                   - ecr:BatchGetImage
                   - ecr:GetDownloadUrlForLayer
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
                 Resource: "*"
 
 Outputs:
