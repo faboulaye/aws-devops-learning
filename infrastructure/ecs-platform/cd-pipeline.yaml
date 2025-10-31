@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: "CodePipeline with GitHub integration for automated ECS deployments"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: test
+    AllowedValues:
+      - dev
+      - test
+      - staging
+      - prod
+    Description: Environment name
+
+  AppName:
+    Type: String
+    Default: host-info-app
+    Description: Application name
+
+  GitHubOwner:
+    Type: String
+    Description: GitHub repository owner
+    Default: faboulaye
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+    Default: aws-devops-learning
+
+  GitHubBranch:
+    Type: String
+    Description: GitHub branch to monitor
+    Default: develop
+
+  GitTagPattern:
+    Type: String
+    Default: v*
+    Description: Git tag glob that should trigger the pipeline
+
+  AppEcrRepositoryUri:
+    Type: String
+    Description: ECR Repository URI for the application Docker images
+
+Resources:
+  # CodePipeline Artifact Bucket
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Environment}-${AppName}-pipeline-artifacts-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+
+  # CodeBuild Project for Docker Build
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${Environment}-${AppName}-docker-build"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: ECR_REPOSITORY_URI
+            Value: !Ref AppEcrRepositoryUri
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - aws --version
+                - echo Logging in to Amazon ECR...
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+                - IMAGE_TAG=${CODEBUILD_WEBHOOK_TRIGGER#tag/}   # e.g., v1.2.3 when triggered by tag
+                - echo Build started on `date`
+                - echo Building the Docker image...
+            build:
+              commands:
+                - docker build -t $ECR_REPOSITORY_URI:$IMAGE_TAG .
+                - docker tag $ECR_REPOSITORY_URI:$IMAGE_TAG $ECR_REPOSITORY_URI:latest
+            post_build:
+              commands:
+                - echo Build completed on `date`
+                - echo Pushing the Docker images...
+                - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
+                - docker push $ECR_REPOSITORY_URI:latest
+                - echo Writing image tag file...
+                # Export CodePipeline variable named ImageTag for CFN ParameterOverrides
+                - printf '[{"name":"ImageTag","value":"%s"}]\n' "${IMAGE_TAG}" > /tmp/variables.json
+          artifacts:
+            files:
+              - /tmp/variables.json
+            discard-paths: yes
+            # Map /tmp/variables.json -> BuildOutput namespace variables
+            secondary-artifacts:
+              BuildOutput:
+                files:
+                  - /tmp/variables.json
+                name: BuildOutput
+                discard-paths: yes
+
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      ConnectionName: aws-devops-learning-connection
+      ProviderType: GitHub # GitHub | Bitbucket | GitLab | GitHubEnterpriseServer (with HostArn)
+
+  # CodePipeline
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${Environment}-${AppName}-deployment-pipeline"
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      PipelineType: V2
+      Triggers:
+        - ProviderType: CodeStarSourceConnection
+          GitConfiguration:
+            SourceActionName: Source
+            Push:
+              - Tags:
+                  Includes:
+                    - !Ref GitTagPattern # e.g., v*
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: 1
+              Configuration:
+                ConnectionArn: !Ref GitHubConnection
+                FullRepositoryId: !Ref GitHubRepo
+                BranchName: !Ref GitHubBranch # required but ignored by tag trigger; keep present
+                DetectChanges: false # Triggers array above controls starts
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Build
+          Actions:
+            - Name: DockerBuildAndPush
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+        - Name: Deploy
+          Actions:
+            - Name: CFNUpdateBlueGreen
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: !Sub ${Environment}-${AppName}-ecs-cluster-changeset
+                StackName: !Sub ${Environment}-${AppName}-ecs-cluster
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
+                TemplatePath: SourceOutput::infrastructure/ecs-platform/ecs-cluster.yaml
+                ParameterOverrides: |
+                  { 
+                    "ImageTag": { 
+                      "Fn::GetParam" : [ "BuildOutput", "variables.json", "ImageTag" ] 
+                    }
+                  }
+              InputArtifacts:
+                - Name: SourceOutput
+                - Name: BuildOutput
+
+  # IAM Roles
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-ecs-pipeline-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource:
+                  - !Join ["/", [!GetAtt PipelineArtifactBucket.Arn, "*"]]
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt PipelineArtifactBucket.Arn
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:Describe*
+                  - cloudformation:GetTemplateSummary
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService:
+                      - codebuild.amazonaws.com
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-codebuild-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - !Join ["/", [!GetAtt PipelineArtifactBucket.Arn, "*"]]
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeRepositories
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: "*"
+
+Outputs:
+  PipelineName:
+    Description: Pipeline name
+    Value: !Ref Pipeline
+  PipelineVersion:
+    Description: Pipeline version
+    Value: !GetAtt Pipeline.Version

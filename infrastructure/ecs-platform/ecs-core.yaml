@@ -1,0 +1,390 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform:
+  - AWS::Serverless-2016-10-31
+  - AWS::CodeDeployBlueGreen
+Description: "ECS Cluster and Task Definition for AWS DevOps Learning App"
+
+Parameters:
+  Project:
+    Type: String
+    Default: devops-ecs-deployment
+    Description: Project name
+
+  Environment:
+    Type: String
+    Default: test
+    AllowedValues: [dev, test, staging, prod]
+    Description: Environment name
+
+  AppName:
+    Type: String
+    Default: host-info-app
+    Description: Application name
+
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Docker image tag to deploy
+
+  ContainerPort:
+    Type: Number
+    Default: 3000
+    Description: Port on which the container listens
+
+  DesiredCount:
+    Type: Number
+    Default: 0
+    Description: Desired number of ECS tasks
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 1
+    Description: Log group retention in days
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC ID to use for the infrastructure
+
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First default subnet ID
+
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second default subnet ID
+
+Resources:
+  # ECR Repository
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${Environment}-${AppName}-repo"
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # Using Default VPC and Subnets
+  # Note: This template uses the existing default VPC and its subnets
+  # No VPC resources are created - we reference the existing default VPC
+
+  # Security Groups
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${Environment}-${AppName}-ecs-sg"
+      GroupDescription: Security group for ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-ecs-sg"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${Environment}-${AppName}-alb-sg"
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-alb-sg"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Application Load Balancer definitions
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${Environment}-${AppName}-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref SubnetId1
+        - !Ref SubnetId2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-alb"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Two target groups for blue/green
+  TGBLUE:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${Environment}-${AppName}-tg-blue"
+      VpcId: !Ref VpcId
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckPath: /healthz
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-tg-blue"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  TGGREEN:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${Environment}-${AppName}-tg-green"
+      VpcId: !Ref VpcId
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckPath: /healthz
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-tg-green"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TGBLUE
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${Environment}-${AppName}-cluster"
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-cluster"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ECS Task Definition
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${Environment}-${AppName}-task"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 256
+      Memory: 512
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      TaskRoleArn: !Ref ECSTaskRole
+      ContainerDefinitions:
+        - Name: !Sub "${Environment}-${AppName}-container"
+          Image:
+            !Join [":", [!GetAtt ECRRepository.RepositoryUri, !Ref ImageTag]]
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSTaskLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: NODE_ENV
+              Value: !Ref Environment
+            - Name: PORT
+              Value: !Ref ContainerPort
+
+  # CloudWatch Log Group
+  ECSTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${Environment}-${AppName}-cluster"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  # ECS Service
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub "${Environment}-${AppName}-service"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      DeploymentController:
+        Type: CODE_DEPLOY
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref SubnetId1
+            - !Ref SubnetId2
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: !Sub "${Environment}-${AppName}-container"
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TGBLUE
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-service"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  # IAM Roles
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-ecs-task-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: "*"
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-ecs-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt ECSTaskLogGroup.Arn
+
+# CodeDeploy Blue/Green hook — this is what makes CodeDeploy execute during stack updates
+Hooks:
+  CodeDeployBlueGreenHook:
+    Type: AWS::CodeDeploy::BlueGreen
+    Properties:
+      TrafficRoutingConfig:
+        Type: TimeBasedCanary
+        TimeBasedCanary:
+          CanaryPercentage: 20
+          CanaryInterval: 5
+      Applications:
+        - Target:
+            Type: AWS::ECS::Service
+            LogicalID: ECSService
+          ECSAttributes:
+            TaskDefinition: ECSTaskDefinition
+            TaskSets:
+              - Blue:
+                  TargetGroup: TGBLUE
+                Green:
+                  TargetGroup: TGGREEN
+            TrafficRouting:
+              ProdTrafficRoute:
+                Type: AWS::ElasticLoadBalancingV2::Listener
+                LogicalID: ALBListener
+      TerminationWaitTimeInMinutes: 5
+
+Outputs:
+  ECRRepositoryURI:
+    Description: ECR Repository URI
+    Value: !GetAtt ECRRepository.RepositoryUri
+
+  ALBDNSName:
+    Description: Application Load Balancer DNS Name
+    Value: !GetAtt ApplicationLoadBalancer.DNSName

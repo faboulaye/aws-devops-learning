@@ -1,0 +1,15 @@
+version: "3"
+
+# Run: task <name>
+tasks:
+  core.deploy:
+    desc: Deploy ECS Core using SAM
+    cmds:
+      - sam package --config-env core --config-file ../samconfig.yaml
+      - sam deploy --config-env core --config-file ../samconfig.yaml --no-fail-on-empty-changeset
+
+  pipeline.deploy:
+    desc: Deploy ECS Pipeline using SAM
+    cmds:
+      - sam package --config-env pipeline --config-file ../samconfig.yaml
+      - sam deploy --config-env pipeline --config-file ../samconfig.yaml --no-fail-on-empty-changeset
