@@ -1,3 +1,8 @@
+## 1.1.0 (2025-10-31)
+
+* feat: Add pipeline to deploy ecs application and enable blue green deployment (#5) ([4e7a2e0](https://github.com/faboulaye/aws-devops-learning/commit/4e7a2e0)), closes [#5](https://github.com/faboulaye/aws-devops-learning/issues/5)
+* ci: Add release version in package.json during the release (#4) ([742bf76](https://github.com/faboulaye/aws-devops-learning/commit/742bf76)), closes [#4](https://github.com/faboulaye/aws-devops-learning/issues/4)
+
 ## 1.0.0 (2025-10-28)
 
 * ci: fix git action configuration to use input branch name 'develop' (#3) ([f1ea5ad](https://github.com/faboulaye/aws-devops-learning/commit/f1ea5ad)), closes [#3](https://github.com/faboulaye/aws-devops-learning/issues/3)
