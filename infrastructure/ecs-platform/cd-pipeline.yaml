@@ -96,15 +96,15 @@ Resources:
                 - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
                 - docker push $ECR_REPOSITORY_URI:latest
                 - |
-                  cat <<EOF > /tmp/release_version.json
+                  cat <<EOF > release_version.json
                   {
                     "ImageTag": "${IMAGE_TAG}"
                   }
                   EOF
           artifacts:
             files:
-              - infrastructure/ecs-platform/ecs-cluster.yaml
-              - /tmp/release_version.json
+              - infrastructure/ecs-platform/ecs-core-out.yaml
+              - release_version.json
 
   GitHubConnection:
     Type: AWS::CodeStarConnections::Connection
@@ -171,16 +171,17 @@ Resources:
                 Version: 1
               Configuration:
                 ActionMode: CHANGE_SET_REPLACE
-                ChangeSetName: !Sub ${Environment}-${AppName}-ecs-cluster-changeset
-                StackName: !Sub ${Environment}-${AppName}-ecs-cluster
+                ChangeSetName: !Sub ${Environment}-${AppName}-ecs-core-changeset
+                StackName: !Sub ${Environment}-${AppName}-ecs-core
                 Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
-                TemplatePath: BuildOutput::ecs-cluster.yaml
+                TemplatePath: BuildOutput::infrastructure/ecs-platform/ecs-core-out.yaml
                 ParameterOverrides: |
                   { 
                     "ImageTag": { 
                       "Fn::GetParam" : [ "BuildOutput", "release_version.json", "ImageTag" ] 
                     }
                   }
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
               InputArtifacts:
                 - Name: BuildOutput
 
@@ -294,7 +295,34 @@ Resources:
                   - codestar-connections:UseConnection
                 Resource: "*"
 
-Outputs:
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-cfn-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      # Scope these to the services your stack actually creates
+      Policies:
+        - PolicyName: cfn-exec
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - ecs:*
+                  - elasticloadbalancing:*
+                  - codedeploy:*
+                  - ecr:*
+                  - logs:*
+                  - iam:PassRole
+                Resource: "*"
+  Outputs:
   PipelineName:
     Description: Pipeline name
     Value: !Ref Pipeline
