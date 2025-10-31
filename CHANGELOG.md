@@ -1,3 +1,7 @@
+## 1.2.0 (2025-10-31)
+
+* feat: Add permission to the pipeline to query codestar (github) (#6) ([c0e29f1](https://github.com/faboulaye/aws-devops-learning/commit/c0e29f1)), closes [#6](https://github.com/faboulaye/aws-devops-learning/issues/6)
+
 ## 1.1.0 (2025-10-31)
 
 * feat: Add pipeline to deploy ecs application and enable blue green deployment (#5) ([4e7a2e0](https://github.com/faboulaye/aws-devops-learning/commit/4e7a2e0)), closes [#5](https://github.com/faboulaye/aws-devops-learning/issues/5)
