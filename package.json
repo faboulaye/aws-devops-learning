@@ -1,6 +1,6 @@
 {
   "name": "aws-devops-learning-app",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Node + Express app with responsive frontend showing hostname and version",
   "main": "app/server.js",
   "type": "commonjs",

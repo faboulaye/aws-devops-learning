@@ -1,3 +1,7 @@
+## 1.3.0 (2025-10-31)
+
+* feat: resolve image tag from git clone in codebuild stage (#7) ([3f7068d](https://github.com/faboulaye/aws-devops-learning/commit/3f7068d)), closes [#7](https://github.com/faboulaye/aws-devops-learning/issues/7)
+
 ## 1.2.0 (2025-10-31)
 
 * feat: Add permission to the pipeline to query codestar (github) (#6) ([c0e29f1](https://github.com/faboulaye/aws-devops-learning/commit/c0e29f1)), closes [#6](https://github.com/faboulaye/aws-devops-learning/issues/6)
