@@ -243,6 +243,11 @@ Resources:
                   StringEqualsIfExists:
                     iam:PassedToService:
                       - codebuild.amazonaws.com
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                  - codestar-connections:GetConnection
+                Resource: "*"
 
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
