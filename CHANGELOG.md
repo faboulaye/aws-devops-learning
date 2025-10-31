@@ -1,3 +1,7 @@
+## 1.4.0 (2025-10-31)
+
+* feat: Add cloudformation role in order ot use it for cloudformation deployment (#8) ([93ade91](https://github.com/faboulaye/aws-devops-learning/commit/93ade91)), closes [#8](https://github.com/faboulaye/aws-devops-learning/issues/8)
+
 ## 1.3.0 (2025-10-31)
 
 * feat: resolve image tag from git clone in codebuild stage (#7) ([3f7068d](https://github.com/faboulaye/aws-devops-learning/commit/3f7068d)), closes [#7](https://github.com/faboulaye/aws-devops-learning/issues/7)
