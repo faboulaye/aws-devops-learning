@@ -4,12 +4,17 @@ vars:
   IMAGE_NAME: app:latest
   CONTAINER_NAME: app-container
 
+includes:
+  ecs:
+    taskfile: infrastructure/ecs-platform/Taskfile.yaml
+    dir: infrastructure/ecs-platform
+
 tasks:
   default:
     desc: List all tasks
     cmds:
       - task -l
-      
+
   install:
     desc: Install Node dependencies
     cmds:
