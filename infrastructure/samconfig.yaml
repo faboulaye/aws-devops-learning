@@ -14,38 +14,43 @@ core:
       s3_bucket: faboulaye-sandbox-sam-repository
       s3_prefix: ecs-platform
       region: eu-central-1
-      stack_name: test-host-info-app-ecs-core
+      stack_name: dev-ecs-core-blue-green-deployment
       confirm_changeset: false
       capabilities: CAPABILITY_IAM CAPABILITY_NAMED_IAM
       template_file: ecs-core-out.yaml
       parameter_overrides:
+        - Environment=dev
         - VpcId=vpc-0eba91cb02d447273
         - SubnetId1=subnet-00baa81f37ac412d3
         - SubnetId2=subnet-0bda715ccc59dd47c
       tags:
-        - Project=devops-ecs-deployment
+        - Project=Devops ECS Blue/Green Deployment
       profile: faboulaye-sandbox
 
-pipeline:
+pipeline-codedeploy:
   package:
     parameters:
       s3_bucket: faboulaye-sandbox-sam-repository
       s3_prefix: ecs-platform
       region: eu-central-1
-      template_file: cd-pipeline.yaml
-      output_template_file: cd-pipeline-out.yaml
+      template_file: code-deploy/cd-pipeline.yaml
+      output_template_file: code-deploy/cd-pipeline-out.yaml
       profile: faboulaye-sandbox
   deploy:
     parameters:
       s3_bucket: faboulaye-sandbox-sam-repository
       s3_prefix: ecs-platform
       region: eu-central-1
-      stack_name: host-info-app-cd-pipeline
+      stack_name: demo-app-codedeploy-cd-pipeline
       confirm_changeset: false
       capabilities: CAPABILITY_IAM CAPABILITY_NAMED_IAM
-      template_file: cd-pipeline-out.yaml
+      template_file: code-deploy/cd-pipeline-out.yaml
       parameter_overrides:
-        - AppEcrRepositoryUri=244086559228.dkr.ecr.eu-central-1.amazonaws.com/test-host-info-app-repo
+        - Environment=test
+        - AppEcrRepositoryUri=244086559228.dkr.ecr.eu-central-1.amazonaws.com/test-ecs-demo-repo
+        - VpcId=vpc-0eba91cb02d447273
+        - SubnetId1=subnet-00baa81f37ac412d3
+        - SubnetId2=subnet-0bda715ccc59dd47c
       tags:
         - Project=devops-ecs-deployment
       profile: faboulaye-sandbox

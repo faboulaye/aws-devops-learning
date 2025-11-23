@@ -1,0 +1,10 @@
+{
+  "Parameters": {
+    "Environment": "<ENVIRONMENT>",
+    "AppName": "<APP_NAME>",
+    "VpcId": "<VPC_ID>",
+    "SubnetId1": "<SUBNET_ID_1>",
+    "SubnetId2": "<SUBNET_ID_2>",
+    "DeploymentType": "<DEPLOYMENT_TYPE>"
+  }
+}

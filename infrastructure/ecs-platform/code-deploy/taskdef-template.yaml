@@ -1,0 +1,26 @@
+family: <ENVIRONMENT>-<APP_NAME>-task
+networkMode: awsvpc
+requiresCompatibilities:
+  - FARGATE
+cpu: <CONTAINER_CPU>
+memory: <CONTAINER_MEMORY>
+executionRoleArn: <ECS_TASK_EXECUTION_ROLE_ARN>
+taskRoleArn: <ECS_TASK_ROLE_ARN>
+containerDefinitions:
+  - name: <ENVIRONMENT>-<APP_NAME>-container
+    image: <APP_IMAGE>
+    essential: true
+    portMappings:
+      - containerPort: <CONTAINER_PORT>
+        protocol: tcp
+    logConfiguration:
+      logDriver: awslogs
+      options:
+        awslogs-group: /ecs/<ENVIRONMENT>-<APP_NAME>-app
+        awslogs-region: <AWS_REGION>
+        awslogs-stream-prefix: ecs
+    Environment:
+      - name: NODE_ENV
+        value: <ENVIRONMENT>
+      - name: PORT
+        value: <CONTAINER_PORT>

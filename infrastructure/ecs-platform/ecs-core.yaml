@@ -1,27 +1,30 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform:
   - AWS::Serverless-2016-10-31
-  - AWS::CodeDeployBlueGreen
+  #- AWS::CodeDeployBlueGreen
 Description: "ECS Cluster and Task Definition for AWS DevOps Learning App"
 
 Parameters:
   Project:
     Type: String
-    Default: devops-ecs-deployment
+    Default: Devops ECS Blue/Green Deployment
     Description: Project name
 
   Environment:
     Type: String
-    Default: test
-    AllowedValues: [dev, test, staging, prod]
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
     Description: Environment name
 
   AppName:
     Type: String
-    Default: host-info-app
+    Default: ecs-demo
     Description: Application name
 
-  ImageTag:
+  DefaultImageTag:
     Type: String
     Default: latest
     Description: Docker image tag to deploy
@@ -30,6 +33,15 @@ Parameters:
     Type: Number
     Default: 3000
     Description: Port on which the container listens
+
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    Description: How much CPU to give the container. 1024 is 1 CPU
+  ContainerMemory:
+    Type: Number
+    Default: 512
+    Description: How much memory in megabytes to give the container
 
   DesiredCount:
     Type: Number
@@ -52,6 +64,20 @@ Parameters:
   SubnetId2:
     Type: AWS::EC2::Subnet::Id
     Description: Second default subnet ID
+
+  DeploymentType:
+    Type: String
+    Default: codedeploy
+    AllowedValues: [codedeploy, cloudformation]
+    Description: Deployment type for ECS service
+
+Conditions:
+  IsDeploymentWithCodeDeploy: !Equals [!Ref DeploymentType, codedeploy]
+  IsDeploymentWithCodeDeployAndCICDEnvironment: !And
+    - !Equals [!Ref DeploymentType, codedeploy]
+    - !Equals [!Ref Environment, test]
+
+  #IsDeploymentWithCloudFormation: !Equals [!Ref DeploymentType, cloudformation]
 
 Resources:
   # ECR Repository
@@ -153,6 +179,37 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TGBLUE
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # Listener Rule to swap traffic between target groups
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: User-Agent
+            Values:
+              - "*"
+      Actions:
+        - Type: forward
+          ForwardConfig:
+            TargetGroups:
+              - TargetGroupArn: !Ref TGBLUE
+                Weight: 100
+              - TargetGroupArn: !Ref TGGREEN
+                Weight: 0
+
   # Two target groups for blue/green
   TGBLUE:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -200,16 +257,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  ALBListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TGBLUE
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
-      Port: 80
-      Protocol: HTTP
-
   # ECS Cluster
   ECSCluster:
     Type: AWS::ECS::Cluster
@@ -232,21 +279,26 @@ Resources:
           Value: !Ref Environment
 
   # ECS Task Definition
-  ECSTaskDefinition:
+  BlueTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: !Sub "${Environment}-${AppName}-task"
       NetworkMode: awsvpc
       RequiresCompatibilities:
         - FARGATE
-      Cpu: 256
-      Memory: 512
-      ExecutionRoleArn: !Ref ECSTaskExecutionRole
-      TaskRoleArn: !Ref ECSTaskRole
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: !Sub "${Environment}-${AppName}-container"
           Image:
-            !Join [":", [!GetAtt ECRRepository.RepositoryUri, !Ref ImageTag]]
+            !Join [
+              ":",
+              [!GetAtt ECRRepository.RepositoryUri, !Ref DefaultImageTag],
+            ]
+          Cpu: !Ref ContainerCpu
+          Memory: !Ref ContainerMemory
           PortMappings:
             - ContainerPort: !Ref ContainerPort
               Protocol: tcp
@@ -254,7 +306,7 @@ Resources:
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Ref ECSTaskLogGroup
+              awslogs-group: !Ref ECSLogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
           Environment:
@@ -263,25 +315,22 @@ Resources:
             - Name: PORT
               Value: !Ref ContainerPort
 
-  # CloudWatch Log Group
-  ECSTaskLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/ecs/${Environment}-${AppName}-cluster"
-      RetentionInDays: !Ref LogRetentionInDays
-
   # ECS Service
   ECSService:
     Type: AWS::ECS::Service
-    DependsOn: ALBListener
     Properties:
       ServiceName: !Sub "${Environment}-${AppName}-service"
       Cluster: !Ref ECSCluster
-      TaskDefinition: !Ref ECSTaskDefinition
+      TaskDefinition: !Ref BlueTaskDefinition
       DesiredCount: !Ref DesiredCount
-      DeploymentController:
-        Type: CODE_DEPLOY
       LaunchType: FARGATE
+      DeploymentController:
+        Type: ECS # CODE_DEPLOY
+      DeploymentConfiguration:
+        Strategy: BLUE_GREEN
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+        BakeTimeInMinutes: 5
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
@@ -294,9 +343,71 @@ Resources:
         - ContainerName: !Sub "${Environment}-${AppName}-container"
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TGBLUE
+          AdvancedConfiguration:
+            AlternateTargetGroupArn: !Ref TGGREEN
+            ProductionListenerRule: !Ref ALBListenerRule
+            RoleArn: !GetAtt ECSManageLoadBalancersRole.Arn
       Tags:
         - Key: Name
           Value: !Sub "${Environment}-${AppName}-service"
+        - Key: App
+          Value: !Ref AppName
+        - Key: Project
+          Value: !Ref Project
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Log Group
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${Environment}-${AppName}-app"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  # CodeDeploy Application
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Condition: IsDeploymentWithCodeDeployAndCICDEnvironment
+    Properties:
+      ApplicationName: !Sub "${Environment}-${AppName}-blue-green-deployment-app"
+      ComputePlatform: ECS
+
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Condition: IsDeploymentWithCodeDeployAndCICDEnvironment
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub "${Environment}-${AppName}-deployment-group"
+      ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+      BlueGreenDeploymentConfiguration:
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 5
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+          WaitTimeInMinutes: 0
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - TargetGroups:
+              - Name: !GetAtt TGBLUE.TargetGroupName
+              - Name: !GetAtt TGGREEN.TargetGroupName
+            ProdTrafficRoute:
+              ListenerArns:
+                - !Ref ALBListener
+      ECSServices:
+        - ClusterName: !Ref ECSCluster
+          ServiceName: !Ref ECSService
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-${AppName}-deployment-group"
         - Key: App
           Value: !Ref AppName
         - Key: Project
@@ -331,6 +442,18 @@ Resources:
                   - ecr:BatchGetImage
                 Resource: "*"
 
+  ECSManageLoadBalancersRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ecs.amazonaws.com]
+            Action: ["sts:AssumeRole"]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonECSInfrastructureRolePolicyForLoadBalancers
+
   ECSTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -351,34 +474,23 @@ Resources:
                 Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !GetAtt ECSTaskLogGroup.Arn
+                Resource: !GetAtt ECSLogGroup.Arn
 
-# CodeDeploy Blue/Green hook — this is what makes CodeDeploy execute during stack updates
-Hooks:
-  CodeDeployBlueGreenHook:
-    Type: AWS::CodeDeploy::BlueGreen
+  # CodeDeploy Service Role (required for CodeDeploy Blue/Green)
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Condition: IsDeploymentWithCodeDeployAndCICDEnvironment
     Properties:
-      TrafficRoutingConfig:
-        Type: TimeBasedCanary
-        TimeBasedCanary:
-          CanaryPercentage: 20
-          CanaryInterval: 5
-      Applications:
-        - Target:
-            Type: AWS::ECS::Service
-            LogicalID: ECSService
-          ECSAttributes:
-            TaskDefinition: ECSTaskDefinition
-            TaskSets:
-              - Blue:
-                  TargetGroup: TGBLUE
-                Green:
-                  TargetGroup: TGGREEN
-            TrafficRouting:
-              ProdTrafficRoute:
-                Type: AWS::ElasticLoadBalancingV2::Listener
-                LogicalID: ALBListener
-      TerminationWaitTimeInMinutes: 5
+      RoleName: !Sub "${Environment}-${AppName}-codedeploy-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
 
 Outputs:
   ECRRepositoryURI:
@@ -388,3 +500,15 @@ Outputs:
   ALBDNSName:
     Description: Application Load Balancer DNS Name
     Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  ContainerName:
+    Description: ECS Container Name
+    Value: !Sub "${Environment}-${AppName}-container"
+
+  CodeDeployApplicationName:
+    Description: CodeDeploy Application Name
+    Value: !Ref CodeDeployApplication
+
+  CodeDeployDeploymentGroupName:
+    Description: CodeDeploy Deployment Group Name
+    Value: !Ref CodeDeployDeploymentGroup

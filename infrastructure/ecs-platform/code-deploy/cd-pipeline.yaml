@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: "CodePipeline with GitHub integration for automated ECS deployments"
+Description: "CodePipeline with GitHub integration for automated ECS deployments - ECS Blue/Green with CodeDeploy"
 
 Parameters:
   Environment:
@@ -15,7 +15,7 @@ Parameters:
 
   AppName:
     Type: String
-    Default: host-info-app
+    Default: ecs-demo
     Description: Application name
 
   GitHubRepo:
@@ -36,6 +36,38 @@ Parameters:
   AppEcrRepositoryUri:
     Type: String
     Description: ECR Repository URI for the application Docker images
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC ID to use for the infrastructure
+
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First default subnet ID
+
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second default subnet ID
+
+  ContainerPort:
+    Type: Number
+    Default: 3000
+    Description: Port on which the container listens
+
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    Description: How much CPU to give the container. 1024 is 1 CPU
+  ContainerMemory:
+    Type: Number
+    Default: 512
+    Description: How much memory in megabytes to give the container
+
+  DeploymentType:
+    Type: String
+    Default: codedeploy
+    AllowedValues: [codedeploy, cloudformation]
+    Description: Deployment type for ECS service
 
 Resources:
   # CodePipeline Artifact Bucket
@@ -71,6 +103,24 @@ Resources:
             Value: !Ref AWS::AccountId
           - Name: ECR_REPOSITORY_URI
             Value: !Ref AppEcrRepositoryUri
+          - Name: APP_NAME
+            Value: !Ref AppName
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+          - Name: VPC_ID
+            Value: !Ref VpcId
+          - Name: SUBNET_ID_1
+            Value: !Ref SubnetId1
+          - Name: SUBNET_ID_2
+            Value: !Ref SubnetId2
+          - Name: DEPLOYMENT_TYPE
+            Value: !Ref DeploymentType
+          - Name: CONTAINER_PORT
+            Value: !Ref ContainerPort
+          - Name: CONTAINER_CPU
+            Value: !Ref ContainerCpu
+          - Name: CONTAINER_MEMORY
+            Value: !Ref ContainerMemory
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -90,22 +140,43 @@ Resources:
               commands:
                 - docker build -t $ECR_REPOSITORY_URI:$IMAGE_TAG .
                 - docker tag $ECR_REPOSITORY_URI:$IMAGE_TAG $ECR_REPOSITORY_URI:latest
-            post_build:
-              commands:
                 - echo Pushing the Docker images...
                 - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
                 - docker push $ECR_REPOSITORY_URI:latest
-                - |
-                  cat <<EOF > release_version.json
-                  {
-                    "ImageTag": "${IMAGE_TAG}"
-                  }
-                  EOF
+
+                # Generate template configuration for CloudFormation ECS core stack
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" \
+                      -e "s|<APP_NAME>|${APP_NAME}|g" \
+                      -e "s|<VPC_ID>|${VPC_ID}|g" \
+                      -e "s|<SUBNET_ID_1>|${SUBNET_ID_1}|g" \
+                      -e "s|<SUBNET_ID_2>|${SUBNET_ID_2}|g" \
+                      -e "s|<DEPLOYMENT_TYPE>|${DEPLOYMENT_TYPE}|g" \>"
+                      infrastructure/ecs-platform/ecs-core/code-deploy/template-configuration.json > ecs-core-template-configuration.json
+                # Generate a new ECS Task Definition file with the new image tag
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" \
+                      -e "s|<APP_NAME>|${APP_NAME}|g" \
+                      -e "s|<APP_IMAGE>|${ECR_REPOSITORY_URI}:${IMAGE_TAG}|g" \
+                      -e "s|<CONTAINER_PORT>|${CONTAINER_PORT}|g" \
+                      -e "s|<CONTAINER_CPU>|${CONTAINER_CPU}|g" \
+                      -e "s|<CONTAINER_MEMORY>|${CONTAINER_MEMORY}|g" \
+                      -e "s|<ECS_TASK_EXECUTION_ROLE_ARN>|arn:aws:iam::$AWS_ACCOUNT_ID:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-execution-role|g" \
+                      -e "s|<ECS_TASK_ROLE_ARN>|arn:aws:iam::$AWS_ACCOUNT_ID:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-role|g" \
+                      infrastructure/ecs-platform/code-deploy/taskdef-template.yaml > taskdef.yaml
+                # Generate a new appspec.yml file for CodeDeploy which will reference the new Task Definition
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" \
+                      -e "s|<APP_NAME>|${APP_NAME}|g" \
+                      -e "s|<CONTAINER_PORT>|${CONTAINER_PORT}|g" \
+                      infrastructure/ecs-platform/code-deploy/appspec-template.yaml > appspec.yaml
+            post_build:
+              commands:
+                
           artifacts:
             files:
-              - infrastructure/ecs-platform/ecs-core-out.yaml
-              - release_version.json
+              - ecs-core-template-configuration.json
+              - appspec.yaml
+              - taskdef.yaml
 
+  # CodeStar Connection to GitHub
   GitHubConnection:
     Type: AWS::CodeStarConnections::Connection
     Properties:
@@ -163,27 +234,43 @@ Resources:
                 - Name: BuildOutput
         - Name: Deploy
           Actions:
-            - Name: CFNUpdateBlueGreen
+            - Name: DeployECSCore
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
                 Provider: CloudFormation
                 Version: 1
               Configuration:
-                ActionMode: CHANGE_SET_REPLACE
-                ChangeSetName: !Sub ${Environment}-${AppName}-ecs-core-changeset
-                StackName: !Sub ${Environment}-${AppName}-ecs-core
+                ActionMode: REPLACE_ON_FAILURE
+                StackName: !Sub ${Environment}-ecs-core-blue-green-deployment
                 Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
-                TemplatePath: BuildOutput::infrastructure/ecs-platform/ecs-core-out.yaml
-                ParameterOverrides: |
-                  { 
-                    "ImageTag": { 
-                      "Fn::GetParam" : [ "BuildOutput", "release_version.json", "ImageTag" ] 
-                    }
-                  }
+                TemplatePath: BuildOutput::ecs-core.yaml
+                TemplateConfiguration: BuildOutput::ecs-core-template-configuration.json
                 RoleArn: !GetAtt CloudFormationExecutionRole.Arn
               InputArtifacts:
                 - Name: BuildOutput
+              OutputArtifacts:
+                - Name: CloudformationOutput
+              RunOrder: 1
+            - Name: CodeDeployBlueGreenApplication
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: 1
+              InputArtifacts:
+                - Name: BuildOutput
+                - Name: CloudformationOutput
+              Configuration:
+                ApplicationName: !Sub "${Environment}-${AppName}-blue-green-deployment-app"
+                DeploymentGroupName: !Sub "${Environment}-${AppName}-blue-green-deployment-group"
+                TaskDefinitionTemplateArtifact: BuildOutput
+                TaskDefinitionTemplatePath: taskdef.yaml
+                AppSpecTemplateArtifact: BuildOutput
+                AppSpecTemplatePath: appspec.yaml
+                Image1ArtifactName: ImageArtifact
+                Image1ContainerName: !Sub "${Environment}-${AppName}-container"
+              RunOrder: 2
 
   # IAM Roles
   CodePipelineServiceRole:
@@ -227,7 +314,26 @@ Resources:
                   - cloudformation:ExecuteChangeSet
                   - cloudformation:Describe*
                   - cloudformation:GetTemplateSummary
+                  - cloudformation:DeleteChangeSet
                 Resource: "*"
+              # Minimal perms for CodeDeployToECS action (see docs)
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetDeployment
+                Resource: !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${Environment}-${AppName}-deployment-group-app/*
+              - Effect: Allow
+                Action:
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:RegisterApplicationRevision
+                Resource:
+                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-deploy-app
+                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-deploy-app/*
+              - Effect: Allow
+                Action:
+                  - codedeploy:GetDeploymentConfig
+                Resource: !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentconfig:*
               - Effect: Allow
                 Action:
                   - iam:PassRole
@@ -236,6 +342,9 @@ Resources:
                   StringEqualsIfExists:
                     iam:PassedToService:
                       - codebuild.amazonaws.com
+                      - cloudformation.amazonaws.com
+                      - ecs.amazonaws.com
+                      - ecs-tasks.amazonaws.com
               - Effect: Allow
                 Action:
                   - codestar-connections:UseConnection
@@ -320,9 +429,11 @@ Resources:
                   - codedeploy:*
                   - ecr:*
                   - logs:*
+                  - cloudformation:*
                   - iam:PassRole
                 Resource: "*"
-  Outputs:
+
+Outputs:
   PipelineName:
     Description: Pipeline name
     Value: !Ref Pipeline

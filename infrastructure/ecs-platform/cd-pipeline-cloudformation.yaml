@@ -1,0 +1,352 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: "CodePipeline with GitHub integration for automated ECS deployments - ECS Blue/Green with CloudFormation"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: test
+    AllowedValues:
+      - dev
+      - test
+      - staging
+      - prod
+    Description: Environment name
+
+  AppName:
+    Type: String
+    Default: host-info-app
+    Description: Application name
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+    Default: faboulaye/aws-devops-learning
+
+  GitHubBranch:
+    Type: String
+    Description: GitHub branch to monitor
+    Default: develop
+
+  GitTagPattern:
+    Type: String
+    Default: v*
+    Description: Git tag glob that should trigger the pipeline
+
+  AppEcrRepositoryUri:
+    Type: String
+    Description: ECR Repository URI for the application Docker images
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC ID to use for the infrastructure
+
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First default subnet ID
+
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second default subnet ID
+
+Resources:
+  # CodePipeline Artifact Bucket
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Environment}-${AppName}-pipeline-artifacts-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+
+  # CodeBuild Project for Docker Build
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${Environment}-${AppName}-docker-build"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: ECR_REPOSITORY_URI
+            Value: !Ref AppEcrRepositoryUri
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          env:
+            git-credential-helper: yes
+          phases:
+            pre_build:
+              commands:
+                - echo Resolve image tag version...
+                - git fetch --tags --depth=1
+                - IMAGE_TAG="$(git tag --points-at HEAD | head -n1)"
+                - if [ -z "$IMAGE_TAG" ]; then echo "No tag at HEAD (was this run not tag-triggered?)"; exit 1; fi
+                - echo Logging in to Amazon ECR...
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+            build:
+              commands:
+                - docker build -t $ECR_REPOSITORY_URI:$IMAGE_TAG .
+                - docker tag $ECR_REPOSITORY_URI:$IMAGE_TAG $ECR_REPOSITORY_URI:latest
+            post_build:
+              commands:
+                - echo Pushing the Docker images...
+                - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
+                - docker push $ECR_REPOSITORY_URI:latest
+                - |
+                  cat <<EOF > release_version.json
+                  {
+                    "ImageTag": "${IMAGE_TAG}"
+                  }
+                  EOF
+          artifacts:
+            files:
+              - infrastructure/ecs-platform/ecs-core.yaml
+              - release_version.json
+            discard-paths: yes
+
+  # CodeStar Connection to GitHub
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      ConnectionName: aws-devops-learning-connection
+      ProviderType: GitHub # GitHub | Bitbucket | GitLab | GitHubEnterpriseServer (with HostArn)
+
+  # CodePipeline
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${Environment}-${AppName}-deployment-pipeline"
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      PipelineType: V2
+      Triggers:
+        - ProviderType: CodeStarSourceConnection
+          GitConfiguration:
+            SourceActionName: Source
+            Push:
+              - Tags:
+                  Includes:
+                    - !Ref GitTagPattern # e.g., v*
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: 1
+              Configuration:
+                ConnectionArn: !Ref GitHubConnection
+                FullRepositoryId: !Ref GitHubRepo
+                BranchName: !Ref GitHubBranch # required but ignored by tag trigger; keep present
+                DetectChanges: false # Triggers array above controls starts
+                OutputArtifactFormat: CODEBUILD_CLONE_REF # <-- enables full clone for CodeBuild
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Build
+          Actions:
+            - Name: DockerBuildAndPush
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+        - Name: Deploy
+          Actions:
+            - Name: CFNUpdateBlueGreen
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: !Sub ${Environment}-${AppName}-ecs-core-changeset
+                StackName: !Sub ${Environment}-${AppName}-ecs-core
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
+                TemplatePath: BuildOutput::ecs-core.yaml
+                ParameterOverrides: !Sub |
+                  { 
+                    "ImageTag": { 
+                      "Fn::GetParam" : [ "BuildOutput", "release_version.json", "ImageTag" ] 
+                    },
+                    "VpcId": "${VpcId}",
+                    "SubnetId1": "${SubnetId1}",
+                    "SubnetId2": "${SubnetId2}"
+                  }
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+              InputArtifacts:
+                - Name: BuildOutput
+
+  # IAM Roles
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-ecs-pipeline-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource:
+                  - !Join ["/", [!GetAtt PipelineArtifactBucket.Arn, "*"]]
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt PipelineArtifactBucket.Arn
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:Describe*
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:DeleteChangeSet
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService:
+                      - codebuild.amazonaws.com
+                      - cloudformation.amazonaws.com
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                  - codestar-connections:GetConnection
+                Resource: "*"
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-codebuild-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - !Join ["/", [!GetAtt PipelineArtifactBucket.Arn, "*"]]
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeRepositories
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: "*"
+
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-${AppName}-cfn-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      # Scope these to the services your stack actually creates
+      Policies:
+        - PolicyName: cfn-exec
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - ecs:*
+                  - elasticloadbalancing:*
+                  - codedeploy:*
+                  - ecr:*
+                  - logs:*
+                  - cloudformation:*
+                  - iam:PassRole
+                Resource: "*"
+
+Outputs:
+  PipelineName:
+    Description: Pipeline name
+    Value: !Ref Pipeline
+  PipelineVersion:
+    Description: Pipeline version
+    Value: !GetAtt Pipeline.Version
