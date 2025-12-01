@@ -8,14 +8,14 @@ tasks:
       - sam package --config-env core --config-file ../samconfig.yaml
       - sam deploy --config-env core --config-file ../samconfig.yaml --no-fail-on-empty-changeset
 
-  pipeline-codedeploy.deploy:
-    desc: Deploy ECS Pipeline using SAM
+  task.deploy:
+    desc: Deploy ECS Task using SAM
     cmds:
-      - sam package --config-env pipeline-codedeploy --config-file ../samconfig.yaml
-      - sam deploy --config-env pipeline-codedeploy --config-file ../samconfig.yaml --no-fail-on-empty-changeset
+      - sam package --config-env task --config-file ../samconfig.yaml
+      - sam deploy --config-env task --config-file ../samconfig.yaml --no-fail-on-empty-changeset
 
-  pipeline-cloudformation.deploy:
+  blue-green-pipeline-codedeploy.deploy:
     desc: Deploy ECS Pipeline using SAM
     cmds:
-      - sam package --config-env pipeline-cloudformation --config-file ../samconfig.yaml
-      - sam deploy --config-env pipeline-cloudformation --config-file ../samconfig.yaml --no-fail-on-empty-changeset
+      - sam package --config-env blue-green-pipeline-codedeploy --config-file ../samconfig.yaml
+      - sam deploy --config-env blue-green-pipeline-codedeploy --config-file ../samconfig.yaml --no-fail-on-empty-changeset

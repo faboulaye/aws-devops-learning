@@ -18,6 +18,11 @@ Parameters:
     Default: ecs-demo
     Description: Application name
 
+  Project:
+    Type: String
+    Default: Devops ECS Blue/Green pipeline with CodeDeploy
+    Description: Project name
+
   GitHubRepo:
     Type: String
     Description: GitHub repository name
@@ -32,10 +37,6 @@ Parameters:
     Type: String
     Default: v*
     Description: Git tag glob that should trigger the pipeline
-
-  AppEcrRepositoryUri:
-    Type: String
-    Description: ECR Repository URI for the application Docker images
 
   VpcId:
     Type: AWS::EC2::VPC::Id
@@ -58,6 +59,7 @@ Parameters:
     Type: Number
     Default: 256
     Description: How much CPU to give the container. 1024 is 1 CPU
+
   ContainerMemory:
     Type: Number
     Default: 512
@@ -68,6 +70,10 @@ Parameters:
     Default: codedeploy
     AllowedValues: [codedeploy, cloudformation]
     Description: Deployment type for ECS service
+
+  ECRRepositoryURI:
+    Type: String
+    Description: URI of the ECR Repository
 
 Resources:
   # CodePipeline Artifact Bucket
@@ -82,6 +88,13 @@ Resources:
           - Id: DeleteOldArtifacts
             Status: Enabled
             ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   # CodeBuild Project for Docker Build
   BuildProject:
@@ -102,7 +115,7 @@ Resources:
           - Name: AWS_ACCOUNT_ID
             Value: !Ref AWS::AccountId
           - Name: ECR_REPOSITORY_URI
-            Value: !Ref AppEcrRepositoryUri
+            Value: !Ref ECRRepositoryURI
           - Name: APP_NAME
             Value: !Ref AppName
           - Name: ENVIRONMENT
@@ -175,6 +188,13 @@ Resources:
               - ecs-core-template-configuration.json
               - appspec.yaml
               - taskdef.yaml
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   # CodeStar Connection to GitHub
   GitHubConnection:
@@ -182,7 +202,13 @@ Resources:
     Properties:
       ConnectionName: aws-devops-learning-connection
       ProviderType: GitHub # GitHub | Bitbucket | GitLab | GitHubEnterpriseServer (with HostArn)
-
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
   # CodePipeline
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -234,24 +260,6 @@ Resources:
                 - Name: BuildOutput
         - Name: Deploy
           Actions:
-            - Name: DeployECSCore
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: 1
-              Configuration:
-                ActionMode: REPLACE_ON_FAILURE
-                StackName: !Sub ${Environment}-ecs-core-blue-green-deployment
-                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
-                TemplatePath: BuildOutput::ecs-core.yaml
-                TemplateConfiguration: BuildOutput::ecs-core-template-configuration.json
-                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
-              InputArtifacts:
-                - Name: BuildOutput
-              OutputArtifacts:
-                - Name: CloudformationOutput
-              RunOrder: 1
             - Name: CodeDeployBlueGreenApplication
               ActionTypeId:
                 Category: Deploy
@@ -260,7 +268,6 @@ Resources:
                 Version: 1
               InputArtifacts:
                 - Name: BuildOutput
-                - Name: CloudformationOutput
               Configuration:
                 ApplicationName: !Sub "${Environment}-${AppName}-blue-green-deployment-app"
                 DeploymentGroupName: !Sub "${Environment}-${AppName}-blue-green-deployment-group"
@@ -270,7 +277,13 @@ Resources:
                 AppSpecTemplatePath: appspec.yaml
                 Image1ArtifactName: ImageArtifact
                 Image1ContainerName: !Sub "${Environment}-${AppName}-container"
-              RunOrder: 2
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   # IAM Roles
   CodePipelineServiceRole:
@@ -350,6 +363,13 @@ Resources:
                   - codestar-connections:UseConnection
                   - codestar-connections:GetConnection
                 Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
@@ -403,6 +423,13 @@ Resources:
                 Action:
                   - codestar-connections:UseConnection
                 Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   CloudFormationExecutionRole:
     Type: AWS::IAM::Role
@@ -432,11 +459,10 @@ Resources:
                   - cloudformation:*
                   - iam:PassRole
                 Resource: "*"
-
-Outputs:
-  PipelineName:
-    Description: Pipeline name
-    Value: !Ref Pipeline
-  PipelineVersion:
-    Description: Pipeline version
-    Value: !GetAtt Pipeline.Version
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment

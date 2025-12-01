@@ -1,0 +1,88 @@
+version: 0.1
+
+core:
+  package:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      template_file: ecs-core.yaml
+      output_template_file: ecs-core-out.yaml
+      profile: <AWS_PROFILE>
+  deploy:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      stack_name: <ENVIRONMENT>-ecs-core-stack
+      confirm_changeset: false
+      capabilities: CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      template_file: ecs-core-out.yaml
+      parameter_overrides:
+        - Environment=<ENVIRONMENT>
+        - VpcId=<VPC_ID>
+        - SubnetId1=<SUBNET_ID_1>
+        - SubnetId2=<SUBNET_ID_2>
+      tags:
+        - Project=Devops ECS Blue/Green Deployment
+      profile: <AWS_PROFILE>
+
+task:
+  package:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      template_file: code-deploy/ecs-task.yaml
+      output_template_file: code-deploy/ecs-task-out.yaml
+      profile: <AWS_PROFILE>
+  deploy:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      stack_name: <ENVIRONMENT>-ecs-task-stack
+      confirm_changeset: false
+      capabilities: CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      template_file: code-deploy/ecs-task-out.yaml
+      parameter_overrides:
+        - Environment=<ENVIRONMENT>
+        - VpcId=<VPC_ID>
+        - SubnetId1=<SUBNET_ID_1>
+        - SubnetId2=<SUBNET_ID_2>
+        - ECRRepositoryURI=<ECR_REPOSITORY_URI>
+        - ALBSecurityGroupId=<ALB_SECURITY_GROUP_ID>
+        - ApplicationLoadBalancerArn=<ALB_ARN>
+        - ECSClusterName=<ENVIRONMENT>-ecs-demo-cluster
+      tags:
+        - Project=Devops ECS Blue/Green Deployment
+      profile: <AWS_PROFILE>
+
+blue-green-pipeline-codedeploy:
+  package:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      template_file: code-deploy/cd-blue-green-pipeline.yaml
+      output_template_file: code-deploy/cd-blue-green-pipeline-out.yaml
+      profile: <AWS_PROFILE>
+  deploy:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      stack_name: ecs-demo-codedeploy-blue-green-pipeline
+      confirm_changeset: false
+      capabilities: CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      template_file: code-deploy/cd-blue-green-pipeline-out.yaml
+      parameter_overrides:
+        - Environment=<ENVIRONMENT>
+        - AppEcrRepositoryUri=<ECR_REPOSITORY_URI>
+        - VpcId=<VPC_ID>
+        - SubnetId1=<SUBNET_ID_1>
+        - SubnetId2=<SUBNET_ID_2>
+        - ECRRepositoryURI=<ECR_REPOSITORY_URI>
+      tags:
+        - Project=Devops ECS Blue/Green pipeline with CodeDeploy
+      profile: <AWS_PROFILE>
