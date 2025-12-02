@@ -1,5 +1,32 @@
 version: 0.1
 
+app:
+  package:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      template_file: ecs-app.yaml
+      output_template_file: ecs-app-out.yaml
+      profile: <AWS_PROFILE>
+  deploy:
+    parameters:
+      s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
+      s3_prefix: ecs-platform
+      region: eu-central-1
+      stack_name: <ENVIRONMENT>-ecs-demo-app-stack
+      confirm_changeset: false
+      capabilities: CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      template_file: ecs-app-out.yaml
+      parameter_overrides:
+        - Environment=<ENVIRONMENT>
+        - VpcId=<VPC_ID>
+        - SubnetId1=<SUBNET_ID_1>b
+        - SubnetId2=<SUBNET_ID_2>
+      tags:
+        - Project=Devops ECS Blue/Green Deployment
+      profile: <AWS_PROFILE>
+
 core:
   package:
     parameters:
@@ -14,7 +41,7 @@ core:
       s3_bucket: <SAM_REPOSITORY_BUCKET_NAME>
       s3_prefix: ecs-platform
       region: eu-central-1
-      stack_name: <ENVIRONMENT>-ecs-core-stack
+      stack_name: <ENVIRONMENT>-ecs-demo-core-stack
       confirm_changeset: false
       capabilities: CAPABILITY_IAM CAPABILITY_NAMED_IAM
       template_file: ecs-core-out.yaml

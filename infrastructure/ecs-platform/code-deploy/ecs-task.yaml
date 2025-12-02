@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: "ECS Cluster and Task Definition for AWS DevOps Learning App"
+Description: "AWS DevOps Learning App - Task Definition and Service for ECS cluster"
 
 Parameters:
   Project:

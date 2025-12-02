@@ -158,7 +158,7 @@ Outputs:
     Description: Application Load Balancer DNS Name
     Value: !GetAtt ApplicationLoadBalancer.DNSName
 
-  ALBArn:
+  ApplicationLoadBalancerArn:
     Description: Application Load Balancer ARN
     Value: !Ref ApplicationLoadBalancer
 

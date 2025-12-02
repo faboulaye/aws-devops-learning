@@ -156,36 +156,15 @@ Resources:
                 - echo Pushing the Docker images...
                 - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
                 - docker push $ECR_REPOSITORY_URI:latest
-
-                # Generate template configuration for CloudFormation ECS core stack
-                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" \
-                      -e "s|<APP_NAME>|${APP_NAME}|g" \
-                      -e "s|<VPC_ID>|${VPC_ID}|g" \
-                      -e "s|<SUBNET_ID_1>|${SUBNET_ID_1}|g" \
-                      -e "s|<SUBNET_ID_2>|${SUBNET_ID_2}|g" \
-                      -e "s|<DEPLOYMENT_TYPE>|${DEPLOYMENT_TYPE}|g" \>"
-                      infrastructure/ecs-platform/ecs-core/code-deploy/template-configuration.json > ecs-core-template-configuration.json
                 # Generate a new ECS Task Definition file with the new image tag
-                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" \
-                      -e "s|<APP_NAME>|${APP_NAME}|g" \
-                      -e "s|<APP_IMAGE>|${ECR_REPOSITORY_URI}:${IMAGE_TAG}|g" \
-                      -e "s|<CONTAINER_PORT>|${CONTAINER_PORT}|g" \
-                      -e "s|<CONTAINER_CPU>|${CONTAINER_CPU}|g" \
-                      -e "s|<CONTAINER_MEMORY>|${CONTAINER_MEMORY}|g" \
-                      -e "s|<ECS_TASK_EXECUTION_ROLE_ARN>|arn:aws:iam::$AWS_ACCOUNT_ID:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-execution-role|g" \
-                      -e "s|<ECS_TASK_ROLE_ARN>|arn:aws:iam::$AWS_ACCOUNT_ID:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-role|g" \
-                      infrastructure/ecs-platform/code-deploy/taskdef-template.yaml > taskdef.yaml
+                - export ECS_TASK_EXECUTION_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-execution-role"
+                - export ECS_TASK_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-role
+                - export TASK_DEFINITION=arn:aws:ecs:${AWS_DEFAULT_REGION}:${AWS_ACCOUNT_ID}:task-definition/${ENVIRONMENT}-${APP_NAME}-task:8
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" -e "s|<APP_IMAGE>|${ECR_REPOSITORY_URI}:${IMAGE_TAG}|g" -e "s|<CONTAINER_PORT>|${CONTAINER_PORT}|g" -e "s|<CONTAINER_CPU>|${CONTAINER_CPU}|g" -e "s|<CONTAINER_MEMORY>|${CONTAINER_MEMORY}|g" -e "s|<ECS_TASK_EXECUTION_ROLE_ARN>|${ECS_TASK_EXECUTION_ROLE_ARN}|g" -e "s|<ECS_TASK_ROLE_ARN>|${ECS_TASK_ROLE_ARN}|g" -e "s|<AWS_REGION>|${AWS_DEFAULT_REGION}|g" infrastructure/ecs-platform/code-deploy/taskdef-template.yaml > taskdef.yaml
                 # Generate a new appspec.yml file for CodeDeploy which will reference the new Task Definition
-                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" \
-                      -e "s|<APP_NAME>|${APP_NAME}|g" \
-                      -e "s|<CONTAINER_PORT>|${CONTAINER_PORT}|g" \
-                      infrastructure/ecs-platform/code-deploy/appspec-template.yaml > appspec.yaml
-            post_build:
-              commands:
-                
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" -e "s|<CONTAINER_PORT>|${CONTAINER_PORT}|g" -e "s|<TASK_DEFINITION>|${TASK_DEFINITION}|g" infrastructure/ecs-platform/code-deploy/appspec-template.yaml > appspec.yaml
           artifacts:
             files:
-              - ecs-core-template-configuration.json
               - appspec.yaml
               - taskdef.yaml
       Tags:
@@ -334,15 +313,15 @@ Resources:
                 Action:
                   - codedeploy:CreateDeployment
                   - codedeploy:GetDeployment
-                Resource: !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${Environment}-${AppName}-deployment-group-app/*
+                Resource: !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${Environment}-${AppName}-deployment-group/*
               - Effect: Allow
                 Action:
                   - codedeploy:GetApplication
                   - codedeploy:GetApplicationRevision
                   - codedeploy:RegisterApplicationRevision
                 Resource:
-                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-deploy-app
-                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-deploy-app/*
+                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-blue-green-deployment-app
+                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-blue-green-deployment-app/*
               - Effect: Allow
                 Action:
                   - codedeploy:GetDeploymentConfig
