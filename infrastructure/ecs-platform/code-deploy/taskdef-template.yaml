@@ -2,8 +2,8 @@ family: <ENVIRONMENT>-<APP_NAME>-task
 networkMode: awsvpc
 requiresCompatibilities:
   - FARGATE
-cpu: <CONTAINER_CPU>
-memory: <CONTAINER_MEMORY>
+cpu: 256
+memory: 512
 executionRoleArn: <ECS_TASK_EXECUTION_ROLE_ARN>
 taskRoleArn: <ECS_TASK_ROLE_ARN>
 containerDefinitions:
@@ -11,7 +11,7 @@ containerDefinitions:
     image: <APP_IMAGE>
     essential: true
     portMappings:
-      - containerPort: <CONTAINER_PORT>
+      - containerPort: 3000
         protocol: tcp
     logConfiguration:
       logDriver: awslogs
@@ -23,4 +23,4 @@ containerDefinitions:
       - name: NODE_ENV
         value: <ENVIRONMENT>
       - name: PORT
-        value: <CONTAINER_PORT>
+        value: 3000

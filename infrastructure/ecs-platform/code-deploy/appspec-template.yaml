@@ -6,4 +6,4 @@ Resources:
         TaskDefinition: <TASK_DEFINITION>
         LoadBalancerInfo:
           ContainerName: <ENVIRONMENT>-<APP_NAME>-container
-          ContainerPort: <CONTAINER_PORT>
+          ContainerPort: 3000

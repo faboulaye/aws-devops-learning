@@ -50,21 +50,6 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
     Description: Second default subnet ID
 
-  ContainerPort:
-    Type: Number
-    Default: 3000
-    Description: Port on which the container listens
-
-  ContainerCpu:
-    Type: Number
-    Default: 256
-    Description: How much CPU to give the container. 1024 is 1 CPU
-
-  ContainerMemory:
-    Type: Number
-    Default: 512
-    Description: How much memory in megabytes to give the container
-
   DeploymentType:
     Type: String
     Default: codedeploy
@@ -128,12 +113,6 @@ Resources:
             Value: !Ref SubnetId2
           - Name: DEPLOYMENT_TYPE
             Value: !Ref DeploymentType
-          - Name: CONTAINER_PORT
-            Value: !Ref ContainerPort
-          - Name: CONTAINER_CPU
-            Value: !Ref ContainerCpu
-          - Name: CONTAINER_MEMORY
-            Value: !Ref ContainerMemory
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -160,28 +139,30 @@ Resources:
                 - docker push $ECR_REPOSITORY_URI:latest
                 
                 - echo "Generating taskdef.yaml..."
-                - ls -alrth .
-                - ls -alrth infrastructure/ecs-platform
-                - ls -alrth infrastructure/ecs-platform/code-deploy
                 - export ECS_TASK_EXECUTION_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-execution-role"
                 - export ECS_TASK_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-role
-                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" -e "s|<CONTAINER_PORT>|'${CONTAINER_PORT}'|g" -e "s|<CONTAINER_CPU>|${CONTAINER_CPU}|g" -e "s|<CONTAINER_MEMORY>|${CONTAINER_MEMORY}|g" -e "s|<ECS_TASK_EXECUTION_ROLE_ARN>|${ECS_TASK_EXECUTION_ROLE_ARN}|g" -e "s|<ECS_TASK_ROLE_ARN>|${ECS_TASK_ROLE_ARN}|g" -e "s|<AWS_REGION>|${AWS_DEFAULT_REGION}|g" infrastructure/ecs-platform/code-deploy/taskdef-template.yaml > taskdef.yaml
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" -e "s|<ECS_TASK_EXECUTION_ROLE_ARN>|${ECS_TASK_EXECUTION_ROLE_ARN}|g" -e "s|<ECS_TASK_ROLE_ARN>|${ECS_TASK_ROLE_ARN}|g" -e "s|<AWS_REGION>|${AWS_DEFAULT_REGION}|g" infrastructure/ecs-platform/code-deploy/taskdef-template.yaml > taskdef.yaml
 
                 - echo "Generating appspec.yaml..."
-                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" -e "s|<CONTAINER_PORT>|'${CONTAINER_PORT}'|g" infrastructure/ecs-platform/code-deploy/appspec-template.yaml > appspec.yaml
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" infrastructure/ecs-platform/code-deploy/appspec-template.yaml > appspec.yaml
             
             post_build:
               commands:
                 - echo "Generating imageDetail.json..."
-                - printf '[{"name":"APP_IMAGE","imageUri":"%s"}]\n' "${ECR_REPOSITORY_URI}:${IMAGE_TAG}" > imageDetail.json
+                - printf '{"ImageURI":"%s"}\n' "${ECR_REPOSITORY_URI}:${IMAGE_TAG}" > imageDetail.json
           artifacts:
             files:
               - taskdef.yaml
               - appspec.yaml
+              - imageDetail.json
             secondary-artifacts:
               ImageArtifact:
                 files:
                   - imageDetail.json
+              TaskOutput:
+                files:
+                  - taskdef.yaml
+                  - appspec.yaml
       Tags:
         - Key: Project
           Value: !Ref Project
@@ -251,8 +232,8 @@ Resources:
               InputArtifacts:
                 - Name: SourceOutput
               OutputArtifacts:
-                - Name: BuildOutput # Due to AWS constraints "The Build artifact must contain only the imageDetail.json file.", we need to split outputs.
-                - Name: ImageArtifact
+                - Name: TaskOutput
+                - Name: ImageArtifact # Due to AWS constraints "The Build artifact must contain only the imageDetail.json file.", we need to split outputs.
         - Name: Deploy
           Actions:
             - Name: CodeDeployBlueGreenApplication
@@ -262,14 +243,14 @@ Resources:
                 Provider: CodeDeployToECS
                 Version: 1
               InputArtifacts:
-                - Name: BuildOutput
+                - Name: TaskOutput
                 - Name: ImageArtifact
               Configuration:
                 ApplicationName: !Sub "${Environment}-${AppName}-blue-green-deployment-app"
                 DeploymentGroupName: !Sub "${Environment}-${AppName}-blue-green-deployment-group"
-                TaskDefinitionTemplateArtifact: BuildOutput
+                TaskDefinitionTemplateArtifact: TaskOutput
                 TaskDefinitionTemplatePath: taskdef.yaml
-                AppSpecTemplateArtifact: BuildOutput
+                AppSpecTemplateArtifact: TaskOutput
                 AppSpecTemplatePath: appspec.yaml
                 Image1ArtifactName: ImageArtifact
                 Image1ContainerName: APP_IMAGE
