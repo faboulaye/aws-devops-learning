@@ -175,14 +175,13 @@ Resources:
                 - echo "Generating imageDetail.json..."
                 - printf '[{"name":"APP_IMAGE","imageUri":"%s"}]\n' "${ECR_REPOSITORY_URI}:${IMAGE_TAG}" > imageDetail.json
           artifacts:
+            files:
+              - taskdef.yaml
+              - appspec.yaml
             secondary-artifacts:
-              BuildOutput:
+              ImageArtifact:
                 files:
                   - imageDetail.json
-              TaskOutput:
-                files:
-                  - taskdef.yaml
-                  - appspec.yaml
       Tags:
         - Key: Project
           Value: !Ref Project
@@ -253,7 +252,7 @@ Resources:
                 - Name: SourceOutput
               OutputArtifacts:
                 - Name: BuildOutput # Due to AWS constraints "The Build artifact must contain only the imageDetail.json file.", we need to split outputs.
-                - Name: TaskOutput
+                - Name: ImageArtifact
         - Name: Deploy
           Actions:
             - Name: CodeDeployBlueGreenApplication
@@ -264,15 +263,15 @@ Resources:
                 Version: 1
               InputArtifacts:
                 - Name: BuildOutput
-                - Name: TaskOutput
+                - Name: ImageArtifact
               Configuration:
                 ApplicationName: !Sub "${Environment}-${AppName}-blue-green-deployment-app"
                 DeploymentGroupName: !Sub "${Environment}-${AppName}-blue-green-deployment-group"
-                TaskDefinitionTemplateArtifact: TaskOutput
+                TaskDefinitionTemplateArtifact: BuildOutput
                 TaskDefinitionTemplatePath: taskdef.yaml
-                AppSpecTemplateArtifact: TaskOutput
+                AppSpecTemplateArtifact: BuildOutput
                 AppSpecTemplatePath: appspec.yaml
-                Image1ArtifactName: BuildOutput
+                Image1ArtifactName: ImageArtifact
                 Image1ContainerName: APP_IMAGE
       Tags:
         - Key: Project
