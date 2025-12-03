@@ -87,8 +87,6 @@ Parameters:
     Description: Deployment type for ECS service
 
 Conditions:
-  IsTestEnvironment: !Equals [!Ref Environment, test]
-
   IsDeploymentWithCodeDeployAndCICDEnvironment: !And
     - !Equals [!Ref DeploymentType, codedeploy]
     - !Equals [!Ref Environment, test]
@@ -126,12 +124,22 @@ Resources:
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TGBLUE
       LoadBalancerArn: !Ref ApplicationLoadBalancerArn
       Port: 80
       Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TGBLUE
+
+  ALBTestListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancerArn
+      Port: 9001
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TGGREEN
 
   # Listener Rule to swap traffic between target groups
   ALBListenerRule:
@@ -143,8 +151,7 @@ Resources:
         - Field: http-header
           HttpHeaderConfig:
             HttpHeaderName: User-Agent
-            Values:
-              - "*"
+            Values: ["*"]
       Actions:
         - Type: forward
           ForwardConfig:
@@ -253,11 +260,7 @@ Resources:
       DesiredCount: !Ref DesiredCount
       LaunchType: FARGATE
       DeploymentController:
-        Type: !If [IsTestEnvironment, CODE_DEPLOY, ECS]
-      DeploymentConfiguration:
-        MaximumPercent: 200
-        MinimumHealthyPercent: 75
-        BakeTimeInMinutes: 5
+        Type: CODE_DEPLOY
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
@@ -270,10 +273,6 @@ Resources:
         - ContainerName: !Sub "${Environment}-${AppName}-container"
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TGBLUE
-          AdvancedConfiguration:
-            AlternateTargetGroupArn: !Ref TGGREEN
-            ProductionListenerRule: !Ref ALBListenerRule
-            RoleArn: !GetAtt ECSManageLoadBalancersRole.Arn
       Tags:
         - Key: Name
           Value: !Sub "${Environment}-${AppName}-service"
@@ -345,6 +344,9 @@ Resources:
             ProdTrafficRoute:
               ListenerArns:
                 - !Ref ALBListener
+            TestTrafficRoute:
+              ListenerArns:
+                - !Ref ALBTestListener
       ECSServices:
         - ClusterName: !Ref ECSClusterName
           ServiceName: !GetAtt ECSService.Name
@@ -391,18 +393,6 @@ Resources:
           Value: !Ref Project
         - Key: Environment
           Value: !Ref Environment
-
-  ECSManageLoadBalancersRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: [ecs.amazonaws.com]
-            Action: ["sts:AssumeRole"]
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonECSInfrastructureRolePolicyForLoadBalancers
 
   ECSTaskRole:
     Type: AWS::IAM::Role

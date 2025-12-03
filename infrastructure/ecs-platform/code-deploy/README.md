@@ -66,3 +66,7 @@ aws ec2 describe-subnets --filters "Name=vpc-id,Values=<your-vpc-id>" "Name=defa
 - The pipeline will automatically build, push, and deploy your app using blue/green strategy.
 - Make sure to update parameters in your `samconfig.yaml` or pass them via CLI as needed.
 - Monitor deployments in the AWS Console under CodeDeploy and ECS for status and troubleshooting.
+
+Do not specify the task definition revision in appspec.yaml.
+Use <TASK_DEFINITION> instead.
+CodeDeploy automatically creates a new task definition revision during each deployment and injects the correct ARN.
