@@ -2,14 +2,25 @@ version: "3"
 
 # Run: task <name>
 tasks:
+  app.deploy:
+    desc: Deploy ECS App using SAM
+    cmds:
+      - sam package --config-env app --config-file samconfig.yaml
+      - sam deploy --config-env app --config-file samconfig.yaml --no-fail-on-empty-changeset
   core.deploy:
     desc: Deploy ECS Core using SAM
     cmds:
-      - sam package --config-env core --config-file ../samconfig.yaml
-      - sam deploy --config-env core --config-file ../samconfig.yaml --no-fail-on-empty-changeset
+      - sam package --config-env core --config-file samconfig.yaml
+      - sam deploy --config-env core --config-file samconfig.yaml --no-fail-on-empty-changeset
 
-  pipeline.deploy:
+  task.deploy:
+    desc: Deploy ECS Task using SAM
+    cmds:
+      - sam package --config-env task --config-file samconfig.yaml
+      - sam deploy --config-env task --config-file samconfig.yaml --no-fail-on-empty-changeset
+
+  blue-green-pipeline-codedeploy.deploy:
     desc: Deploy ECS Pipeline using SAM
     cmds:
-      - sam package --config-env pipeline --config-file ../samconfig.yaml
-      - sam deploy --config-env pipeline --config-file ../samconfig.yaml --no-fail-on-empty-changeset
+      - sam package --config-env blue-green-pipeline-codedeploy --config-file samconfig.yaml
+      - sam deploy --config-env blue-green-pipeline-codedeploy --config-file samconfig.yaml --no-fail-on-empty-changeset

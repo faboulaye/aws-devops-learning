@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: "ECS Cluster and Task Definition for AWS DevOps Learning App"
+
+Parameters:
+  Project:
+    Type: String
+    Default: Devops ECS Blue/Green Deployment
+    Description: Project name
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Environment name
+
+  AppName:
+    Type: String
+    Default: ecs-demo
+    Description: Application name
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC ID to use for the infrastructure
+
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First default subnet ID
+
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second default subnet ID
+
+  LoadBalancerPort:
+    Type: Number
+    Default: 80
+    Description: Port for the Application Load Balancer
+
+  DesiredCount:
+    Type: Number
+    Default: 0
+    Description: Desired number of ECS tasks to run
+
+Resources:
+  CoreStack:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: ../ecs-core.yaml
+      Parameters:
+        Project: !Ref Project
+        Environment: !Ref Environment
+        AppName: !Ref AppName
+        VpcId: !Ref VpcId
+        SubnetId1: !Ref SubnetId1
+        SubnetId2: !Ref SubnetId2
+        LoadBalancerPort: !Ref LoadBalancerPort
+      Tags:
+        Name: !Sub "${Environment}-${AppName}-core-stack"
+        Project: !Ref Project
+
+  TaskStack:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: ecs-task.yaml
+      Parameters:
+        Project: !Ref Project
+        Environment: !Ref Environment
+        AppName: !Ref AppName
+        VpcId: !Ref VpcId
+        SubnetId1: !Ref SubnetId1
+        SubnetId2: !Ref SubnetId2
+        ECRRepositoryURI: !GetAtt CoreStack.Outputs.ECRRepositoryURI
+        ALBSecurityGroupId: !GetAtt CoreStack.Outputs.ALBSecurityGroupId
+        ApplicationLoadBalancerArn: !GetAtt CoreStack.Outputs.ApplicationLoadBalancerArn
+        ECSClusterName: !GetAtt CoreStack.Outputs.ECSClusterName
+        DesiredCount: !Ref DesiredCount
+      Tags:
+        Name: !Sub "${Environment}-${AppName}-task-stack"
+        Project: !Ref Project

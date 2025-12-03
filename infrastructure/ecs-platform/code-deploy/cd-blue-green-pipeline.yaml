@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: "CodePipeline with GitHub integration for automated ECS deployments"
+Description: "CodePipeline with GitHub integration for automated ECS deployments - ECS Blue/Green with CodeDeploy"
 
 Parameters:
   Environment:
@@ -15,8 +15,13 @@ Parameters:
 
   AppName:
     Type: String
-    Default: host-info-app
+    Default: ecs-demo
     Description: Application name
+
+  Project:
+    Type: String
+    Default: Devops ECS Blue/Green pipeline with CodeDeploy
+    Description: Project name
 
   GitHubRepo:
     Type: String
@@ -33,9 +38,27 @@ Parameters:
     Default: v*
     Description: Git tag glob that should trigger the pipeline
 
-  AppEcrRepositoryUri:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC ID to use for the infrastructure
+
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First default subnet ID
+
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second default subnet ID
+
+  DeploymentType:
     Type: String
-    Description: ECR Repository URI for the application Docker images
+    Default: codedeploy
+    AllowedValues: [codedeploy, cloudformation]
+    Description: Deployment type for ECS service
+
+  ECRRepositoryURI:
+    Type: String
+    Description: URI of the ECR Repository
 
 Resources:
   # CodePipeline Artifact Bucket
@@ -50,6 +73,13 @@ Resources:
           - Id: DeleteOldArtifacts
             Status: Enabled
             ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   # CodeBuild Project for Docker Build
   BuildProject:
@@ -70,7 +100,19 @@ Resources:
           - Name: AWS_ACCOUNT_ID
             Value: !Ref AWS::AccountId
           - Name: ECR_REPOSITORY_URI
-            Value: !Ref AppEcrRepositoryUri
+            Value: !Ref ECRRepositoryURI
+          - Name: APP_NAME
+            Value: !Ref AppName
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+          - Name: VPC_ID
+            Value: !Ref VpcId
+          - Name: SUBNET_ID_1
+            Value: !Ref SubnetId1
+          - Name: SUBNET_ID_2
+            Value: !Ref SubnetId2
+          - Name: DEPLOYMENT_TYPE
+            Value: !Ref DeploymentType
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -88,30 +130,60 @@ Resources:
                 - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
             build:
               commands:
+                - echo "Building Docker image..."
                 - docker build -t $ECR_REPOSITORY_URI:$IMAGE_TAG .
                 - docker tag $ECR_REPOSITORY_URI:$IMAGE_TAG $ECR_REPOSITORY_URI:latest
-            post_build:
-              commands:
+                
                 - echo Pushing the Docker images...
                 - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
                 - docker push $ECR_REPOSITORY_URI:latest
-                - |
-                  cat <<EOF > release_version.json
-                  {
-                    "ImageTag": "${IMAGE_TAG}"
-                  }
-                  EOF
+                
+                - echo "Generating taskdef.yaml..."
+                - export ECS_TASK_EXECUTION_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-execution-role"
+                - export ECS_TASK_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ENVIRONMENT}-${APP_NAME}-ecs-task-role
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" -e "s|<ECS_TASK_EXECUTION_ROLE_ARN>|${ECS_TASK_EXECUTION_ROLE_ARN}|g" -e "s|<ECS_TASK_ROLE_ARN>|${ECS_TASK_ROLE_ARN}|g" -e "s|<AWS_REGION>|${AWS_DEFAULT_REGION}|g" infrastructure/ecs-platform/code-deploy/taskdef-template.yaml > taskdef.yaml
+
+                - echo "Generating appspec.yaml..."
+                - sed -e "s|<ENVIRONMENT>|${ENVIRONMENT}|g" -e "s|<APP_NAME>|${APP_NAME}|g" infrastructure/ecs-platform/code-deploy/appspec-template.yaml > appspec.yaml
+            
+            post_build:
+              commands:
+                - echo "Generating imageDetail.json..."
+                - printf '{"ImageURI":"%s"}\n' "${ECR_REPOSITORY_URI}:${IMAGE_TAG}" > imageDetail.json
           artifacts:
             files:
-              - infrastructure/ecs-platform/ecs-core-out.yaml
-              - release_version.json
+              - taskdef.yaml
+              - appspec.yaml
+              - imageDetail.json
+            secondary-artifacts:
+              ImageArtifact:
+                files:
+                  - imageDetail.json
+              TaskOutput:
+                files:
+                  - taskdef.yaml
+                  - appspec.yaml
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
+  # CodeStar Connection to GitHub
   GitHubConnection:
     Type: AWS::CodeStarConnections::Connection
     Properties:
       ConnectionName: aws-devops-learning-connection
       ProviderType: GitHub # GitHub | Bitbucket | GitLab | GitHubEnterpriseServer (with HostArn)
-
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
   # CodePipeline
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -160,30 +232,35 @@ Resources:
               InputArtifacts:
                 - Name: SourceOutput
               OutputArtifacts:
-                - Name: BuildOutput
+                - Name: TaskOutput
+                - Name: ImageArtifact # Due to AWS constraints "The Build artifact must contain only the imageDetail.json file.", we need to split outputs.
         - Name: Deploy
           Actions:
-            - Name: CFNUpdateBlueGreen
+            - Name: CodeDeployBlueGreenApplication
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
-                Provider: CloudFormation
+                Provider: CodeDeployToECS
                 Version: 1
-              Configuration:
-                ActionMode: CHANGE_SET_REPLACE
-                ChangeSetName: !Sub ${Environment}-${AppName}-ecs-core-changeset
-                StackName: !Sub ${Environment}-${AppName}-ecs-core
-                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
-                TemplatePath: BuildOutput::infrastructure/ecs-platform/ecs-core-out.yaml
-                ParameterOverrides: |
-                  { 
-                    "ImageTag": { 
-                      "Fn::GetParam" : [ "BuildOutput", "release_version.json", "ImageTag" ] 
-                    }
-                  }
-                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
               InputArtifacts:
-                - Name: BuildOutput
+                - Name: TaskOutput
+                - Name: ImageArtifact
+              Configuration:
+                ApplicationName: !Sub "${Environment}-${AppName}-blue-green-deployment-app"
+                DeploymentGroupName: !Sub "${Environment}-${AppName}-blue-green-deployment-group"
+                TaskDefinitionTemplateArtifact: TaskOutput
+                TaskDefinitionTemplatePath: taskdef.yaml
+                AppSpecTemplateArtifact: TaskOutput
+                AppSpecTemplatePath: appspec.yaml
+                Image1ArtifactName: ImageArtifact
+                Image1ContainerName: APP_IMAGE
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   # IAM Roles
   CodePipelineServiceRole:
@@ -227,7 +304,26 @@ Resources:
                   - cloudformation:ExecuteChangeSet
                   - cloudformation:Describe*
                   - cloudformation:GetTemplateSummary
+                  - cloudformation:DeleteChangeSet
                 Resource: "*"
+              # Minimal perms for CodeDeployToECS action (see docs)
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetDeployment
+                Resource: !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${Environment}-${AppName}-deployment-group/*
+              - Effect: Allow
+                Action:
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:RegisterApplicationRevision
+                Resource:
+                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-blue-green-deployment-app
+                  - !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${Environment}-${AppName}-blue-green-deployment-app/*
+              - Effect: Allow
+                Action:
+                  - codedeploy:GetDeploymentConfig
+                Resource: !Sub arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentconfig:*
               - Effect: Allow
                 Action:
                   - iam:PassRole
@@ -236,11 +332,21 @@ Resources:
                   StringEqualsIfExists:
                     iam:PassedToService:
                       - codebuild.amazonaws.com
+                      - cloudformation.amazonaws.com
+                      - ecs.amazonaws.com
+                      - ecs-tasks.amazonaws.com
               - Effect: Allow
                 Action:
                   - codestar-connections:UseConnection
                   - codestar-connections:GetConnection
                 Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
@@ -294,6 +400,13 @@ Resources:
                 Action:
                   - codestar-connections:UseConnection
                 Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
 
   CloudFormationExecutionRole:
     Type: AWS::IAM::Role
@@ -320,12 +433,13 @@ Resources:
                   - codedeploy:*
                   - ecr:*
                   - logs:*
+                  - cloudformation:*
                   - iam:PassRole
                 Resource: "*"
-  Outputs:
-  PipelineName:
-    Description: Pipeline name
-    Value: !Ref Pipeline
-  PipelineVersion:
-    Description: Pipeline version
-    Value: !GetAtt Pipeline.Version
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: App
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref Environment
